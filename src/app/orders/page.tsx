@@ -9,7 +9,7 @@ export default function OrdersPage() {
   const [clients, setClients] = useState<any[]>([]);
   const [availableProducts, setAvailableProducts] = useState<any[]>([]);
   const [isLoading, setIsLoading] = useState(true);
-  
+  const [selectedOrders, setSelectedOrders] = useState<string[]>([]);
   const [isFormOpen, setIsFormOpen] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
@@ -44,7 +44,7 @@ export default function OrdersPage() {
           created_at, 
           shipping_info_snapshot,
           clients(name, wechat_id),
-          order_items( quantity, products(name, article_number, color, size, image_url) )
+          order_items( quantity, unit_price_cad, products(name, article_number, color, size, image_url, price_cad) )
         `)
         .order('created_at', { ascending: false })
     ]);
@@ -212,13 +212,14 @@ export default function OrdersPage() {
           // 核心操作：关联子单品集合
           await supabase.from('order_items').insert([{
              order_id: orderData.id,
-             product_id: pData.id,
-             quantity: item.quantity,
-             unit_price_cad: 0
-          }]);
+              product_id: pData.id,
+              quantity: item.quantity,
+              unit_price_cad: pData.price_cad || 0
+           }]);
       }
 
       await fetchData();
+      setSelectedOrders([]);
       setCart([{ name: "", article_number: "", color: "", size: "", quantity: 1 }]);
       setNewTotalCny("");
       setShippingInfo("");
@@ -249,6 +250,35 @@ export default function OrdersPage() {
   // 生成原生的 HTML datalist 用于极致的智能零依赖联想提示
   const uniqueNames = Array.from(new Set(availableProducts.map(p => p.name).filter(Boolean)));
   const uniqueArticles = Array.from(new Set(availableProducts.map(p => p.article_number).filter(Boolean)));
+
+  const handleBatchStatusUpdate = async (newStatus: string) => {
+    if (selectedOrders.length === 0) return;
+    setIsSubmitting(true);
+    try {
+      await supabase.from('orders').update({ status: newStatus }).in('id', selectedOrders);
+      await fetchData();
+      setSelectedOrders([]);
+    } catch (err) {
+      console.error(err);
+      alert("批量更新状态失败");
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleUpdateTracking = async (orderId: string, tracking: string) => {
+    try {
+      await supabase.from('orders').update({ tracking_number: tracking }).eq('id', orderId);
+      // Update local state to avoid refetching
+      setOrders(prev => prev.map(o => o.id === orderId ? { ...o, tracking_number: tracking } : o));
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  const toggleSelectOrder = (id: string) => {
+    setSelectedOrders(prev => prev.includes(id) ? prev.filter(oid => oid !== id) : [...prev, id]);
+  };
 
   return (
     <div className="flex-1 p-4 md:p-8 h-full overflow-y-auto w-full relative">
@@ -409,6 +439,24 @@ export default function OrdersPage() {
         </div>
       )}
 
+      {/* 批量操作条 */}
+      {selectedOrders.length > 0 && (
+        <div className="sticky top-4 z-50 bg-blue-600 text-white p-4 rounded-2xl shadow-2xl flex items-center justify-between mb-8 animate-in slide-in-from-top-4 duration-300">
+           <div className="flex items-center gap-4">
+              <span className="text-sm font-black uppercase tracking-widest pl-2">已选中 {selectedOrders.length} 个订单</span>
+              <div className="h-6 w-px bg-blue-400/50"></div>
+              <div className="flex gap-2">
+                 {['purchased', 'stored', 'shipped_intl', 'shipped_local', 'delivered'].map(st => (
+                    <button key={st} onClick={() => handleBatchStatusUpdate(st)} className="px-3 py-1.5 bg-white/10 hover:bg-white/20 rounded-lg text-[10px] font-black uppercase transition border border-white/10">
+                       改为{st === 'purchased' ? '已采' : st === 'stored' ? '入库' : st === 'shipped_intl' ? '国际' : st === 'shipped_local' ? '国内' : '完成'}
+                    </button>
+                 ))}
+              </div>
+           </div>
+           <button onClick={() => setSelectedOrders([])} className="text-white/60 hover:text-white transition"><X className="w-5 h-5"/></button>
+        </div>
+      )}
+
       {/* 订单历史列表 */}
       <div className="space-y-4">
         {isLoading ? (
@@ -424,8 +472,11 @@ export default function OrdersPage() {
           </div>
         ) : (
           orders.map(order => (
-            <div key={order.id} className="bg-white dark:bg-zinc-950 border border-gray-100 dark:border-zinc-800 rounded-2xl p-5 shadow-sm hover:shadow-lg transition-all duration-300 group">
-              <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-gray-50 dark:border-zinc-800/50 pb-4 mb-4">
+            <div key={order.id} className={`bg-white dark:bg-zinc-950 border ${selectedOrders.includes(order.id) ? 'border-blue-500 shadow-blue-500/10' : 'border-gray-100 dark:border-zinc-800'} rounded-2xl p-5 shadow-sm hover:shadow-lg transition-all duration-300 group relative`}>
+              <div className="absolute top-5 left-2">
+                 <input type="checkbox" checked={selectedOrders.includes(order.id)} onChange={() => toggleSelectOrder(order.id)} className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500 cursor-pointer" />
+              </div>
+              <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-gray-50 dark:border-zinc-800/50 pb-4 mb-4 pl-8">
                 <div className="flex flex-row items-center justify-between w-full md:w-auto md:justify-start gap-4">
                   <div className="flex items-center gap-3">
                     <div className="w-11 h-11 rounded-xl bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400 flex items-center justify-center font-black text-xl border border-blue-100 dark:border-blue-800/30">
@@ -445,6 +496,20 @@ export default function OrdersPage() {
                 </div>
                 
                 <div className="flex flex-row-reverse md:flex-row items-center justify-between w-full md:w-auto gap-3">
+                   {/* 利润计算 */}
+                   {(() => {
+                      const costCad = order.order_items?.reduce((s: number, i: any) => s + (i.unit_price_cad || 0) * i.quantity, 0) || 0;
+                      const profitCad = (order.total_cny / order.exchange_rate) - costCad;
+                      const profitCny = profitCad * order.exchange_rate;
+                      return (
+                        <div className="hidden sm:flex flex-col items-end mr-4">
+                           <span className="text-[9px] font-black text-gray-400 uppercase tracking-widest">预估利润</span>
+                           <span className={`text-xs font-black ${profitCny > 0 ? 'text-emerald-500' : 'text-red-500'}`}>
+                              ¥{profitCny.toFixed(2)}
+                           </span>
+                        </div>
+                      );
+                   })()}
                    {getStatusBadge(order.status)}
                    <span className="font-bold text-gray-900 dark:text-white flex items-center gap-1.5 bg-gray-50 dark:bg-zinc-900 px-3 py-1.5 rounded-lg border border-gray-100 dark:border-zinc-800 select-all">
                      <span className="text-[10px] text-gray-500 font-medium tracking-wide">单据一口价收</span>
@@ -485,6 +550,18 @@ export default function OrdersPage() {
                        <p className="text-[13px] text-yellow-900 dark:text-yellow-600/80 leading-relaxed font-bold tracking-wide whitespace-pre-wrap select-all pr-6">
                          {order.shipping_info_snapshot || '（本批次特殊派件，无收货落地指向痕迹保留）'}
                        </p>
+                    </div>
+                    <div className="mt-4 flex items-center gap-3">
+                       <div className="bg-blue-50 dark:bg-blue-900/20 px-3 py-2 rounded-xl border border-blue-100 dark:border-blue-800/30 flex-1 flex items-center gap-2">
+                          <span className="text-[10px] font-black text-blue-600 uppercase">运单号</span>
+                          <input 
+                             type="text" 
+                             placeholder="贴入国际/国内运单号..." 
+                             value={order.tracking_number || ''} 
+                             onChange={(e) => handleUpdateTracking(order.id, e.target.value)}
+                             className="bg-transparent border-none outline-none text-xs font-bold text-blue-700 dark:text-blue-400 w-full placeholder:text-blue-300" 
+                          />
+                       </div>
                     </div>
                  </div>
               </div>

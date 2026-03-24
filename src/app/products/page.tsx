@@ -179,10 +179,16 @@ export default function ProductsPage() {
                       <p className="text-[10px] font-bold text-slate-400 mb-6 tracking-widest uppercase">Article: {group.article_number}</p>
                       
                       <div className="space-y-2">{group.skus.map((sku: any) => (
-                          <div key={sku.id} className="flex items-center justify-between p-3.5 rounded-2xl bg-slate-50/50 dark:bg-zinc-800/60 text-[11px] font-bold border border-transparent hover:border-slate-100 transition shadow-sm hover:shadow-md">
-                              <span className="text-slate-600 font-black">{sku.color} / {sku.size} <span className="text-blue-600 ml-2 font-black tracking-tight">${sku.price_cad}</span></span>
+                          <div key={sku.id} className={`flex items-center justify-between p-3.5 rounded-2xl ${sku.stock_quantity <= 1 ? 'bg-red-50/80 dark:bg-red-900/10 border-red-100/50 dark:border-red-900/20' : 'bg-slate-50/50 dark:bg-zinc-800/60 border-transparent'} text-[11px] font-bold border hover:border-slate-100 transition shadow-sm hover:shadow-md`}>
+                              <span className={`${sku.stock_quantity <= 1 ? 'text-red-600 dark:text-red-400' : 'text-slate-600 dark:text-gray-300'} font-black`}>{sku.color} / {sku.size} <span className="text-blue-600 ml-2 font-black tracking-tight">${sku.price_cad}</span></span>
                               <div className="flex items-center gap-4">
-                                  {sku.stock_quantity > 0 && <span className="text-emerald-500 bg-emerald-50 px-2.5 py-1 rounded-lg font-black tracking-tighter shadow-sm shadow-emerald-200/50">现货:{sku.stock_quantity}</span>}
+                                  {sku.stock_quantity > 0 ? (
+                                      <span className={`${sku.stock_quantity <= 1 ? 'text-red-600 bg-red-100 dark:bg-red-900/40' : 'text-emerald-500 bg-emerald-50 dark:bg-emerald-900/20'} px-2.5 py-1 rounded-lg font-black tracking-tighter shadow-sm`}>
+                                          {sku.stock_quantity <= 1 ? '⚠️ 缺货临界' : '现货'}:{sku.stock_quantity}
+                                      </span>
+                                  ) : (
+                                      <span className="text-slate-400 bg-slate-100 dark:bg-zinc-800 px-2.5 py-1 rounded-lg font-black tracking-tighter">断货</span>
+                                  )}
                                   <button onClick={async () => {
                                       const add = prompt("入库件数:", "1");
                                       if (!add || isNaN(parseInt(add))) return;
