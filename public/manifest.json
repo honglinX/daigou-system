@@ -1,0 +1,17 @@
+{
+  "name": "代购管理系统",
+  "short_name": "代购系统",
+  "description": "零成本私有化代购管理引擎",
+  "start_url": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#18181b",
+  "theme_color": "#2563eb",
+  "icons": [
+    {
+      "src": "/file.svg",
+      "sizes": "192x192",
+      "type": "image/svg+xml"
+    }
+  ]
+}
