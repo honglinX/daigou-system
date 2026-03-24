@@ -1,8 +1,8 @@
 "use client";
 import { useState, useEffect, useCallback, useRef } from "react";
-import { Tag, DollarSign, Loader2, Image as ImageIcon, Barcode, Hash, Palette, Scaling, ScanLine, UploadCloud, Plus, Package, CheckCircle2, X, Camera, PlusCircle } from "lucide-react";
+import { Tag, DollarSign, Loader2, Image as ImageIcon, Barcode, Hash, Palette, Scaling, ScanLine, UploadCloud, Plus, Package, CheckCircle2, X, Camera, PlusCircle, Search, Trash2, Edit2 } from "lucide-react";
 import { supabase } from "@/utils/supabase";
-import { recognizeProductTagFromImage } from "@/utils/ocr";
+import { scanBarcodeFromImage } from "@/utils/ocr";
 
 export default function ProductsPage() {
   const [groupedProducts, setGroupedProducts] = useState<any[]>([]);
@@ -14,6 +14,8 @@ export default function ProductsPage() {
     price_cad: "", barcodes: "", color: "", size: "" 
   });
   
+  const [searchQuery, setSearchQuery] = useState("");
+  const [editingId, setEditingId] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isRecognizing, setIsRecognizing] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -37,48 +39,64 @@ export default function ProductsPage() {
     setIsLoading(false);
   };
 
-  const processOcrFile = async (blob: any, isSpuMode: boolean) => {
+  const filteredProducts = groupedProducts.filter(group => 
+    group.name?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+    group.brand?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+    group.article_number?.toLowerCase().includes(searchQuery.toLowerCase())
+  );
+
+  const handleDelete = async (id: string) => {
+    if (!confirm("确定要永久删除这件商品吗？")) return;
+    const { error } = await supabase.from('products').delete().eq('id', id);
+    if (error) alert("删除失败: " + error.message);
+    else fetchProducts();
+  };
+
+  const handleEdit = (id: string) => {
+    // Find the product in all data or from grouped list
+    // Finding it from the flattened list is easier.
+    // We'll search by id in the grouped skus.
+    let target = null;
+    for (const group of groupedProducts) {
+        target = group.skus.find((s: any) => s.id === id);
+        if (target) {
+            setForm({
+                brand: group.brand || "",
+                name: group.name || "",
+                article_number: group.article_number || "",
+                image_url: group.image_url || "",
+                price_cad: target.price_cad.toString(),
+                barcodes: target.barcodes.join(', '),
+                color: target.color,
+                size: target.size
+            });
+            setEditingId(id);
+            setIsFormOpen(true);
+            window.scrollTo({ top: 0, behavior: 'smooth' });
+            break;
+        }
+    }
+  };
+
+  const processOcrFile = async (blob: any) => {
       setIsRecognizing(true);
       try {
-        const raw = await recognizeProductTagFromImage(blob);
-        const ocrRaw = (raw.split('__RAW_TEXT__')[1] || '').split('__BARCODE__')[0].trim();
-        const barcode = (raw.split('__BARCODE__')[1] || '').trim();
+        const barcode = await scanBarcodeFromImage(blob);
 
-        // 【终极：全图残差算法 (Omniscient Remainder)】
-        // 1. 全图字符纠偏 (O->0, I->1)
-        const repairedText = ocrRaw
-            .replace(/[oO]/g, '0')
-            .replace(/[iIl|]/g, '1')
-            .replace(/[sS]/g, '5')
-            .replace(/[bB]/g, '8');
-
-        // 2. 提取全图所有数字原子，连成一条线
-        const totalDigitsCloud = repairedText.replace(/[^0-9]/g, '');
-
-        // 3. 残差计算：从这个数字海洋里，把条码数字整个拿走
-        let articleNumber = '';
-        if (barcode && totalDigitsCloud.includes(barcode)) {
-            // 如果条码是完整的一块，直接切掉它，剩下的大概率就是货号
-            const remainder = totalDigitsCloud.replace(barcode, '');
-            const match = remainder.match(/\d{10,12}/);
-            articleNumber = match ? match[0] : '';
-        } else {
-            // 如果条码本身也被读碎了，或者不完全包含在 cloud 里，降级寻找除了条码外的最长数字串
-            const fragments = repairedText.replace(/[^0-9]/g, ' ').split(/\s+/).filter(s => s.length >= 10);
-            articleNumber = fragments.find(f => f !== barcode) || '';
+        if (!barcode) {
+            alert("未能识别出清晰条码，请调整角度重试");
+            return;
         }
 
-        // 颜色和尺码从原文提取
-        const sizeMatch = ocrRaw.match(/\b(XXS|XXL|XS|XL|S\/P|M\/P|L\/P|[SML])\b/i);
-        const colorMatch = ['WHITE','BLACK','NAVY','RED','BLUE','GREEN','PINK','GRAY','GREY','BEIGE','BROWN','YELLOW','PURPLE','ORANGE','CREAM','IVORY','KHAKI','TAN','OATMEAL'].find(c => ocrRaw.toUpperCase().includes(c));
-
         setForm(prev => ({ ...prev, 
-            barcodes: barcode || prev.barcodes, 
-            article_number: articleNumber || prev.article_number, 
-            size: sizeMatch ? sizeMatch[1].toUpperCase() : prev.size, 
-            color: colorMatch || prev.color 
+            barcodes: barcode || prev.barcodes
         }));
-      } catch (err) { console.error(err); } finally { setIsRecognizing(false); }
+      } catch (err) { 
+          console.error(err); 
+          alert("识别过程发生错误");
+      } finally { 
+          setIsRecognizing(false); 
+      }
   };
 
   const handleImageSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -108,15 +126,45 @@ export default function ProductsPage() {
       <div className="mb-10 flex justify-between items-center px-4">
         <div>
            <h1 className="text-2xl font-black tracking-tight text-slate-900 dark:text-white uppercase leading-none mb-1">代购商品档案</h1>
-           <p className="text-[10px] font-bold text-blue-500 uppercase tracking-widest pl-0.5">Automated Remainder Scan v13.0</p>
+           <p className="text-[10px] font-bold text-blue-500 uppercase tracking-widest pl-0.5">Automated Barcode Scan v14.0</p>
         </div>
-        <button onClick={() => setIsFormOpen(!isFormOpen)} className="bg-blue-600 text-white px-8 py-3.5 rounded-full font-black shadow-xl active:scale-95 transition text-xs tracking-widest uppercase">{isFormOpen ? "取消" : "+ 建档新货"}</button>
+        <div className="flex-1 max-w-md mx-6 hidden md:block relative">
+            <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+            <input 
+                type="text" 
+                placeholder="搜索名称、品牌或货号..." 
+                value={searchQuery}
+                onChange={e => setSearchQuery(e.target.value)}
+                className="w-full bg-slate-100 dark:bg-zinc-900 border-none rounded-full px-12 py-3 text-xs font-bold focus:ring-2 focus:ring-blue-500 transition outline-none"
+            />
+        </div>
+        <button onClick={() => {
+            if (isFormOpen && editingId) {
+                setEditingId(null);
+                setForm({ brand: "", name: "", price_cad: "", article_number: "", barcodes: "", color: "", size: "", image_url: "" });
+            }
+            setIsFormOpen(!isFormOpen);
+        }} className="bg-blue-600 text-white px-8 py-3.5 rounded-full font-black shadow-xl active:scale-95 transition text-xs tracking-widest uppercase">
+            {isFormOpen ? "收起面板" : "+ 建档新货"}
+        </button>
+      </div>
+
+      {/* 搜索框 (移动端专用) */}
+      <div className="md:hidden px-4 mb-6 relative">
+          <Search className="absolute left-8 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+          <input 
+              type="text" 
+              placeholder="搜索档案..." 
+              value={searchQuery}
+              onChange={e => setSearchQuery(e.target.value)}
+              className="w-full bg-white dark:bg-zinc-900 border border-slate-100 dark:border-zinc-800 rounded-2xl px-12 py-4 text-xs font-bold focus:ring-2 focus:ring-blue-500 transition shadow-sm outline-none"
+          />
       </div>
 
       {isFormOpen && (
         <div className="mb-10 bg-white dark:bg-zinc-900 border border-slate-100 dark:border-zinc-800 rounded-[3rem] shadow-2xl p-8" onPaste={(e) => {
             const file = e.clipboardData.items[0]?.getAsFile();
-            if (file) processOcrFile(file, true);
+            if (file) processOcrFile(file);
         }}>
             <div className="grid grid-cols-1 lg:grid-cols-4 gap-12">
                 <div className="lg:col-span-1 border-r border-slate-50 dark:border-zinc-800/50 pr-8">
@@ -139,7 +187,11 @@ export default function ProductsPage() {
                             <label className="text-[10px] font-black text-slate-400 mb-2 block uppercase tracking-widest pl-1">EAN / UPC 条码</label>
                             <div className="relative group">
                                 <input type="text" value={form.barcodes} placeholder="884094387311" onChange={e => setForm({...form, barcodes: e.target.value})} className="w-full px-6 py-4.5 bg-slate-50 dark:bg-zinc-800 rounded-2xl font-bold outline-none pr-12 transition" />
-                                <input type="file" hidden accept="image/*" id="cam-spu" capture="environment" onChange={e => e.target.files && processOcrFile(e.target.files[0], true)} />
+                                <input type="file" hidden accept="image/*" id="cam-spu" capture="environment" onChange={e => {
+                                    if (e.target.files && e.target.files[0]) {
+                                        processOcrFile(e.target.files[0]);
+                                    }
+                                }} />
                                 <label htmlFor="cam-spu" className="absolute right-2.5 top-2.5 p-2 bg-blue-600 text-white rounded-xl cursor-pointer hover:bg-blue-700 transition shadow-lg shadow-blue-500/30"><Camera className="w-4 h-4"/></label>
                             </div>
                         </div>
@@ -150,17 +202,44 @@ export default function ProductsPage() {
                     </div>
                     <div className="flex flex-col justify-end">
                         <button onClick={async () => {
-                           if (!form.name || !form.price_cad) { alert("必填项缺失"); return; }
+                           if (!form.name) { alert("商品名称为必填项"); return; }
                            setIsSubmitting(true);
-                           const bccs = form.barcodes ? form.barcodes.split(/[,，\s]+/).map(s => s.trim()).filter(Boolean) : [];
-                           await supabase.from('products').insert([{ brand: form.brand || '无品牌', name: form.name, article_number: form.article_number || null, image_url: form.image_url || '', color: form.color || null, size: form.size || null, price_cad: parseFloat(form.price_cad), barcodes: bccs, stock_quantity: 1 }]);
-                           await fetchProducts();
-                           setForm({ brand: "", name: "", price_cad: "", article_number: "", barcodes: "", color: "", size: "", image_url: "" });
-                           setIsFormOpen(false);
-                           setIsSubmitting(false);
+                           try {
+                               const bccs = form.barcodes ? form.barcodes.split(/[,，\s]+/).map(s => s.trim()).filter(Boolean) : [];
+                               const payload = { 
+                                   brand: form.brand || '无品牌', 
+                                   name: form.name, 
+                                   article_number: form.article_number || null, 
+                                   image_url: form.image_url || '', 
+                                   color: form.color || null, 
+                                   size: form.size || null, 
+                                   price_cad: parseFloat(form.price_cad) || 0, 
+                                   barcodes: bccs 
+                               };
+
+                               if (editingId) {
+                                   const { error } = await supabase.from('products').update(payload).eq('id', editingId);
+                                   if (error) throw error;
+                                   alert("✅ 档案更新成功");
+                               } else {
+                                   const { error } = await supabase.from('products').insert([{ ...payload, stock_quantity: 1 }]);
+                                   if (error) throw error;
+                                   alert("🎉 商品档案已成功入库");
+                               }
+
+                               await fetchProducts();
+                               setForm({ brand: "", name: "", price_cad: "", article_number: "", barcodes: "", color: "", size: "", image_url: "" });
+                               setEditingId(null);
+                               setIsFormOpen(false);
+                           } catch (err: any) {
+                               console.error("Save error:", err);
+                               alert(`执行失败: ${err.message || "未知错误"}`);
+                           } finally {
+                               setIsSubmitting(false);
+                           }
                         }} disabled={isSubmitting || isRecognizing} className="w-full bg-blue-600 text-white py-5 rounded-[1.5rem] font-black text-xl shadow-[0_25px_50px_-12px_rgba(59,130,246,0.4)] active:scale-95 transition flex items-center justify-center gap-3 disabled:opacity-50">
                             {isRecognizing && <Loader2 className="animate-spin w-6 h-6" />}
-                            {isRecognizing ? "正在运算残差矩阵..." : "正式档案入库"}
+                            {isRecognizing ? "正在识别条码..." : editingId ? "确认修改档案" : "正式档案入库"}
                         </button>
                     </div>
                 </div>
@@ -170,7 +249,7 @@ export default function ProductsPage() {
 
       {/* 列表渲染 */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-10 px-4 pb-24">
-          {groupedProducts.map(group => (
+          {filteredProducts.map(group => (
               <div key={group.id_key} className="bg-white dark:bg-zinc-900 border border-slate-100 dark:border-zinc-800 rounded-[3rem] p-7 hover:shadow-[0_45px_90px_rgba(0,0,0,0.06)] transition-all group animate-in zoom-in-95 duration-500">
                   <div className="aspect-square rounded-[2.25rem] bg-slate-50/50 dark:bg-zinc-800/40 overflow-hidden mb-7 ring-1 ring-slate-100 dark:ring-zinc-800">{group.image_url ? <img src={group.image_url} className="w-full h-full object-cover group-hover:scale-110 transition duration-1000" /> : <ImageIcon className="w-full h-full p-20 text-slate-100" />}</div>
                   <div className="flex-1">
@@ -189,12 +268,16 @@ export default function ProductsPage() {
                                   ) : (
                                       <span className="text-slate-400 bg-slate-100 dark:bg-zinc-800 px-2.5 py-1 rounded-lg font-black tracking-tighter">断货</span>
                                   )}
-                                  <button onClick={async () => {
-                                      const add = prompt("入库件数:", "1");
-                                      if (!add || isNaN(parseInt(add))) return;
-                                      await supabase.from('products').update({ stock_quantity: (sku.stock_quantity || 0) + parseInt(add) }).eq('id', sku.id);
-                                      fetchProducts();
-                                  }} className="w-9 h-9 flex items-center justify-center bg-white dark:bg-zinc-700 text-blue-600 rounded-xl shadow-lg shadow-blue-100 dark:shadow-none hover:scale-110 active:scale-95 transition font-black text-lg">+</button>
+                                  <div className="flex items-center gap-2">
+                                      <button onClick={() => handleEdit(sku.id)} className="w-8 h-8 flex items-center justify-center text-slate-400 hover:text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/30 rounded-lg transition"><Edit2 className="w-3.5 h-3.5"/></button>
+                                      <button onClick={() => handleDelete(sku.id)} className="w-8 h-8 flex items-center justify-center text-slate-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/30 rounded-lg transition"><Trash2 className="w-3.5 h-3.5"/></button>
+                                      <button onClick={async () => {
+                                          const add = prompt("入库件数:", "1");
+                                          if (!add || isNaN(parseInt(add))) return;
+                                          await supabase.from('products').update({ stock_quantity: (sku.stock_quantity || 0) + parseInt(add) }).eq('id', sku.id);
+                                          fetchProducts();
+                                      }} className="w-8 h-8 flex items-center justify-center bg-white dark:bg-zinc-700 text-blue-600 rounded-lg shadow-sm border border-slate-100 dark:border-zinc-600 hover:scale-110 active:scale-95 transition font-black text-sm">+</button>
+                                  </div>
                               </div>
                           </div>
                       ))}</div>
@@ -203,7 +286,7 @@ export default function ProductsPage() {
           ))}
       </div>
       
-      {isRecognizing && <div className="fixed bottom-10 inset-x-0 mx-auto w-fit bg-zinc-900 text-white px-10 py-6 rounded-full shadow-[0_35px_70px_rgba(0,0,0,0.5)] z-[100] flex items-center gap-5 animate-in fade-in slide-in-from-bottom-12"><ScanLine className="animate-pulse w-7 h-7 text-blue-400" /><span className="text-sm font-black uppercase tracking-[0.4em] pl-1">残差运算中...</span></div>}
+      {isRecognizing && <div className="fixed bottom-10 inset-x-0 mx-auto w-fit bg-zinc-900 text-white px-10 py-6 rounded-full shadow-[0_35px_70px_rgba(0,0,0,0.5)] z-[100] flex items-center gap-5 animate-in fade-in slide-in-from-bottom-12"><ScanLine className="animate-pulse w-7 h-7 text-blue-400" /><span className="text-sm font-black uppercase tracking-[0.4em] pl-1">条码识别中...</span></div>}
     </div>
   );
 }
