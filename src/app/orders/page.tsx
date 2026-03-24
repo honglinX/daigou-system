@@ -146,6 +146,33 @@ export default function OrdersPage() {
         }]);
       }
 
+      // 0. 库存检查 (Pass 1)：判断订单能否全现货直发
+      let finalStatus = 'stored';
+      for (const item of cart) {
+          const pData = availableProducts.find(p => 
+              (p.article_number && item.article_number && p.article_number === item.article_number) || 
+              (p.name === item.name)
+          );
+          if (!pData || (pData.stock_quantity || 0) < item.quantity) {
+              finalStatus = 'pending';
+              break;
+          }
+      }
+
+      // 库存直发锁定 (Pass 2)：只有当完全具备全现货下发条件时，真实扣除云端的存货柱状记录
+      if (finalStatus === 'stored') {
+          for (const item of cart) {
+              const pData = availableProducts.find(p => 
+                  (p.article_number && item.article_number && p.article_number === item.article_number) || 
+                  (p.name === item.name)
+              );
+              if (pData) {
+                  const newStock = Math.max(0, (pData.stock_quantity || 0) - item.quantity);
+                  await supabase.from('products').update({ stock_quantity: newStock }).eq('id', pData.id);
+              }
+          }
+      }
+
       // 1. 生成物流快照包裹订单
       const currentRate = parseFloat(localStorage.getItem('daigou_exchange_rate') || '5.35');
       const { data: orderData, error: orderErr } = await supabase.from('orders').insert([{
@@ -153,7 +180,7 @@ export default function OrdersPage() {
         exchange_rate: currentRate, 
         total_cny: parseFloat(newTotalCny),
         shipping_info_snapshot: shippingInfo,
-        status: 'pending'
+        status: finalStatus
       }]).select().single();
 
       if (orderErr) throw orderErr;
@@ -173,9 +200,10 @@ export default function OrdersPage() {
                 brand: '特例抓单',
                 name: item.name,
                 article_number: item.article_number || null,
-                color: item.color || null,
-                size: item.size || null,
-                price_cad: 0 // 代购执行时确认
+                color: item.color || '-',
+                size: item.size || '-',
+                price_cad: 0, // 代购执行时确认
+                stock_quantity: 0 // 新建商品库存默认为0
             }]).select().single();
             if (pErr) throw pErr;
             pData = newP;
