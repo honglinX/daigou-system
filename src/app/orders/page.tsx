@@ -1,6 +1,6 @@
 "use client";
 import { useState, useEffect, useCallback } from "react";
-import { Package, Calendar, Loader2, DollarSign, Image as ImageIcon, MapPin, CheckCircle2, ShoppingCart, X, Hash, Palette, Scaling, Copy } from "lucide-react";
+import { Package, Calendar, Loader2, DollarSign, Image as ImageIcon, MapPin, CheckCircle2, ShoppingCart, X, Hash, Palette, Scaling, Copy, Trash2 } from "lucide-react";
 import { supabase } from "@/utils/supabase";
 import { recognizeAddressFromImage } from "@/utils/ocr";
 
@@ -12,6 +12,7 @@ export default function OrdersPage() {
   const [selectedOrders, setSelectedOrders] = useState<string[]>([]);
   const [isFormOpen, setIsFormOpen] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [editingOrderId, setEditingOrderId] = useState<string | null>(null);
 
   // 快捷建单表单状态
   const [selectedClientId, setSelectedClientId] = useState<string>("");
@@ -22,8 +23,9 @@ export default function OrdersPage() {
 
   // 多商品购物车
   const [cart, setCart] = useState([
-    { name: "", article_number: "", color: "", size: "", quantity: 1 }
+    { name: "", article_number: "", color: "", size: "", quantity: 1, unit_price_cny: "" }
   ]);
+
 
   useEffect(() => {
     fetchData();
@@ -43,11 +45,15 @@ export default function OrdersPage() {
           exchange_rate, 
           created_at, 
           shipping_info_snapshot,
-          clients(name, wechat_id),
-          order_items( quantity, unit_price_cad, products(name, article_number, color, size, image_url, price_cad) )
+          clients(id, name, wechat_id),
+          order_items( quantity, unit_price_cad, products(id, name, article_number, color, size, image_url, price_cad) )
         `)
         .order('created_at', { ascending: false })
     ]);
+
+    if (clientsRes.error) console.error("Clients fetch error:", clientsRes.error);
+    if (productsRes.error) console.error("Products fetch error:", productsRes.error);
+    if (ordersRes.error) console.error("Orders fetch error:", ordersRes.error);
 
     if (clientsRes.data) setClients(clientsRes.data);
     if (productsRes.data) setAvailableProducts(productsRes.data);
@@ -88,7 +94,7 @@ export default function OrdersPage() {
     newCart[index] = { ...newCart[index], [field]: value };
     
     // 智能双向自动补全：货号带出名称，或名称带出货号/尺码/颜色
-    if (field === 'article_number' && value.length > 3) {
+    if (field === 'article_number' && typeof value === 'string' && value.length > 3) {
         // 利用货号查找，不区分大小写
         const match = availableProducts.find(p => p.article_number && p.article_number.toUpperCase() === value.toUpperCase());
         if (match) {
@@ -96,7 +102,7 @@ export default function OrdersPage() {
             if (!newCart[index].color) newCart[index].color = match.color || '';
             if (!newCart[index].size) newCart[index].size = match.size || '';
         }
-    } else if (field === 'name' && value.length > 2) {
+    } else if (field === 'name' && typeof value === 'string' && value.length > 2) {
         const match = availableProducts.find(p => p.name.includes(value) || value.includes(p.name));
         if (match) {
             if (!newCart[index].article_number) newCart[index].article_number = match.article_number || '';
@@ -108,10 +114,33 @@ export default function OrdersPage() {
     setCart(newCart);
   };
 
-  const addCartItem = () => setCart([...cart, { name: "", article_number: "", color: "", size: "", quantity: 1 }]);
+  const addCartItem = () => setCart([...cart, { name: "", article_number: "", color: "", size: "", quantity: 1, unit_price_cny: "" }]);
   const removeCartItem = (index: number) => setCart(cart.filter((_, i) => i !== index));
 
-  const handleCreateOrder = async () => {
+  const handleEditOrder = (order: any) => {
+    setEditingOrderId(order.id);
+    setSelectedClientId(order.clients?.id || "");
+    setNewTotalCny(order.total_cny?.toString() || "");
+    setShippingInfo(order.shipping_info_snapshot || "");
+    
+    // Map order items to cart
+    const newCart = order.order_items.map((oi: any) => ({
+      name: oi.products?.name || "",
+      article_number: oi.products?.article_number || "",
+      color: oi.products?.color || "",
+      size: oi.products?.size || "",
+      quantity: oi.quantity,
+      unit_price_cny: oi.unit_price_cad?.toString() || ""
+    }));
+    setCart(newCart);
+    setIsFormOpen(true);
+    
+    // Scroll to top
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const handleSaveOrder = async () => {
+
     if (!selectedClientId) {
       alert("请选择下单客户或创建新客户！"); return;
     }
@@ -120,11 +149,12 @@ export default function OrdersPage() {
     }
     const hasEmptyItem = cart.some(item => !item.name.trim() || item.quantity < 1);
     if (cart.length === 0 || hasEmptyItem) {
-      alert("请至少添加一件商品，并确认发货批次有效！"); return;
+      alert("请至少添加一件商品！"); return;
     }
-    if (!newTotalCny || !shippingInfo) {
-      alert("请补全预计收款金额与运单回执地址！"); return;
+    if (!shippingInfo) {
+      alert("请填写运单回执地址！"); return;
     }
+
 
     setIsSubmitting(true);
 
@@ -146,10 +176,25 @@ export default function OrdersPage() {
         }]);
       }
 
-      // 0. 库存检查 (Pass 1)：判断订单能否全现货直发
+      // 0. 库存检查与智能回查
       let finalStatus = 'stored';
+      
+      // 如果是编辑订单，我们先做内存级的库存映射回退（虚拟回放）
+      const tempProducts = JSON.parse(JSON.stringify(availableProducts));
+      if (editingOrderId) {
+          const originalOrder = orders.find(o => o.id === editingOrderId);
+          if (originalOrder && originalOrder.status === 'stored') {
+              for (const oi of originalOrder.order_items || []) {
+                  if (oi.products?.id) {
+                      const tp = tempProducts.find((p: any) => p.id === oi.products.id);
+                      if (tp) tp.stock_quantity = (tp.stock_quantity || 0) + oi.quantity;
+                  }
+              }
+          }
+      }
+
       for (const item of cart) {
-          const pData = availableProducts.find(p => 
+          const pData = tempProducts.find((p: any) => 
               (p.article_number && item.article_number && p.article_number === item.article_number) || 
               (p.name === item.name)
           );
@@ -159,7 +204,24 @@ export default function OrdersPage() {
           }
       }
 
-      // 库存直发锁定 (Pass 2)：只有当完全具备全现货下发条件时，真实扣除云端的存货柱状记录
+      // 如果最终状态判定可存，执行真实的数据库库存变更
+      // 为保证一致性：若是编辑且原先是stored，我们先在库里把之前的库存加回去
+      if (editingOrderId) {
+          const originalOrder = orders.find(o => o.id === editingOrderId);
+          if (originalOrder && originalOrder.status === 'stored') {
+              for (const oi of originalOrder.order_items || []) {
+                  if (oi.products?.id) {
+                      const pData = availableProducts.find(p => p.id === oi.products.id);
+                      if (pData) {
+                          const recovered = (pData.stock_quantity || 0) + oi.quantity;
+                          await supabase.from('products').update({ stock_quantity: recovered }).eq('id', pData.id);
+                          pData.stock_quantity = recovered; // 同步本地引用
+                      }
+                  }
+              }
+          }
+      }
+
       if (finalStatus === 'stored') {
           for (const item of cart) {
               const pData = availableProducts.find(p => 
@@ -169,32 +231,45 @@ export default function OrdersPage() {
               if (pData) {
                   const newStock = Math.max(0, (pData.stock_quantity || 0) - item.quantity);
                   await supabase.from('products').update({ stock_quantity: newStock }).eq('id', pData.id);
+                  pData.stock_quantity = newStock; // 同步本地引用
               }
           }
       }
 
-      // 1. 生成物流快照包裹订单
+      // 1. 生成或更新物流快照包裹订单
       const currentRate = parseFloat(localStorage.getItem('daigou_exchange_rate') || '5.35');
-      const { data: orderData, error: orderErr } = await supabase.from('orders').insert([{
+      const orderPayload = {
         client_id: finalClientId,
         exchange_rate: currentRate, 
-        total_cny: parseFloat(newTotalCny),
+        total_cny: newTotalCny ? parseFloat(newTotalCny) : null,
         shipping_info_snapshot: shippingInfo,
         status: finalStatus
-      }]).select().single();
+      };
 
-      if (orderErr) throw orderErr;
+      let orderId = editingOrderId;
+
+      if (editingOrderId) {
+        const { error: updateErr } = await supabase.from('orders').update(orderPayload).eq('id', editingOrderId);
+        if (updateErr) throw updateErr;
+
+        // Delete existing items for update
+        const { error: deleteErr } = await supabase.from('order_items').delete().eq('order_id', editingOrderId);
+        if (deleteErr) throw deleteErr;
+      } else {
+        const { data: orderData, error: orderErr } = await supabase.from('orders').insert([orderPayload]).select().single();
+        if (orderErr) throw orderErr;
+        orderId = orderData.id;
+      }
 
       // 2. 将购物车内的商品链接或创建至图谱底库
+      const orderItemsToInsert = [];
       for (const item of cart) {
           
-          // 查找是否属于已有档案的商品以防冗余建档（严格匹配名字或货号）
           let pData = availableProducts.find(p => 
-              (p.article_number && item.article_number && p.article_number === item.article_number) || 
-              (p.name === item.name)
+              (p.article_number && item.article_number && p.article_number.toUpperCase() === item.article_number.toUpperCase()) || 
+              (p.name && item.name && p.name.trim() === item.name.trim())
           );
 
-          // 若属于无库纯新品，则直接现场建卡落库，未来自动补全
           if (!pData) {
             const { data: newP, error: pErr } = await supabase.from('products').insert([{
                 brand: '特例抓单',
@@ -202,34 +277,40 @@ export default function OrdersPage() {
                 article_number: item.article_number || null,
                 color: item.color || '-',
                 size: item.size || '-',
-                price_cad: 0, // 代购执行时确认
-                stock_quantity: 0 // 新建商品库存默认为0
+                price_cad: 0, 
+                stock_quantity: 0 
             }]).select().single();
             if (pErr) throw pErr;
             pData = newP;
           }
 
-          // 核心操作：关联子单品集合
-          await supabase.from('order_items').insert([{
-             order_id: orderData.id,
+          orderItemsToInsert.push({
+              order_id: orderId,
               product_id: pData.id,
               quantity: item.quantity,
-              unit_price_cad: pData.price_cad || 0
-           }]);
+              unit_price_cad: item.unit_price_cny ? parseFloat(item.unit_price_cny) : 0
+          });
+      }
+
+      // 批量插入所有明细
+      if (orderItemsToInsert.length > 0) {
+        const { error: itemsErr } = await supabase.from('order_items').insert(orderItemsToInsert);
+        if (itemsErr) throw itemsErr;
       }
 
       await fetchData();
       setSelectedOrders([]);
-      setCart([{ name: "", article_number: "", color: "", size: "", quantity: 1 }]);
+      setCart([{ name: "", article_number: "", color: "", size: "", quantity: 1, unit_price_cny: "" }]);
       setNewTotalCny("");
       setShippingInfo("");
       setNewClientData({ name: "", wechat: "" });
       setSelectedClientId("");
       setIsFormOpen(false);
+      setEditingOrderId(null);
 
     } catch (err) {
       console.error(err);
-      alert("创建多维订单流时超时偏离，请重试！");
+      alert("保存失败，请检查数据完整性或重试！");
     } finally {
       setIsSubmitting(false);
     }
@@ -280,6 +361,42 @@ export default function OrdersPage() {
     setSelectedOrders(prev => prev.includes(id) ? prev.filter(oid => oid !== id) : [...prev, id]);
   };
 
+  const handleDeleteOrder = async (orderId: string) => {
+    if (!confirm("确定要销毁该笔订单吗？此操作将同步抹除关联的所有商品项，若订单为已入库状态，则会自动返还库存。")) return;
+    
+    setIsSubmitting(true);
+    try {
+      const orderToDel = orders.find(o => o.id === orderId);
+
+      // 1. 先删除关联项（如果 DB 没有级联删除）
+      await supabase.from('order_items').delete().eq('order_id', orderId);
+      // 2. 删除主订单
+      const { error } = await supabase.from('orders').delete().eq('id', orderId);
+      if (error) throw error;
+      
+      // 3. 释放/恢复扣减过的库存
+      if (orderToDel && orderToDel.status === 'stored') {
+          for (const oi of orderToDel.order_items || []) {
+             if (oi.products?.id) {
+                 const pData = availableProducts.find(p => p.id === oi.products.id);
+                 if (pData) {
+                    const newStock = (pData.stock_quantity || 0) + oi.quantity;
+                    await supabase.from('products').update({ stock_quantity: newStock }).eq('id', pData.id);
+                    pData.stock_quantity = newStock; // 同步本地内存
+                 }
+             }
+          }
+      }
+
+      await fetchData();
+    } catch (err) {
+      console.error(err);
+      alert("订单销毁失败，请重试。");
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
   return (
     <div className="flex-1 p-4 md:p-8 h-full overflow-y-auto w-full relative">
       
@@ -297,20 +414,32 @@ export default function OrdersPage() {
           <p className="mt-1 text-sm text-gray-500">双向智能建单、客户归档及包裹生命周期</p>
         </div>
         <button 
-          onClick={() => setIsFormOpen(!isFormOpen)}
+          onClick={() => {
+            if (isFormOpen && editingOrderId) {
+              setEditingOrderId(null);
+              setCart([{ name: "", article_number: "", color: "", size: "", quantity: 1, unit_price_cny: "" }]);
+              setNewTotalCny("");
+              setShippingInfo("");
+              setSelectedClientId("");
+            } else {
+              setIsFormOpen(!isFormOpen);
+            }
+          }}
           disabled={isLoading}
           className="bg-blue-600 text-white px-5 py-2.5 rounded-lg font-bold text-sm tracking-wide hover:bg-blue-700 transition shadow-sm border border-transparent disabled:opacity-50"
         >
-          {isFormOpen ? "收起面板" : "+ 创建一笔新订单"}
+          {isFormOpen ? (editingOrderId ? "取消修改" : "收起面板") : "+ 创建一笔新订单"}
         </button>
+
       </div>
 
       {isFormOpen && (
         <div className="mb-8 bg-white dark:bg-zinc-950 border border-blue-100 dark:border-blue-900/30 rounded-2xl shadow-lg overflow-hidden">
           <div className="p-5 border-b border-gray-100 dark:border-zinc-800 bg-gray-50/50 dark:bg-zinc-900/40">
             <h2 className="text-lg font-bold text-gray-900 dark:text-white flex items-center gap-2">
-               <Package className="w-5 h-5 text-blue-600" /> 超级快捷建单中心
+               <Package className="w-5 h-5 text-blue-600" /> {editingOrderId ? "正在修改现有订单" : "超级快捷建单中心"}
             </h2>
+
           </div>
           
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 p-6">
@@ -382,7 +511,7 @@ export default function OrdersPage() {
                          )}
                          <div className="grid grid-cols-12 gap-2.5 relative">
                             {/* 名称支持 Autocomplete 联想 */}
-                            <div className="col-span-12 md:col-span-8 group relative flex items-center">
+                            <div className="col-span-12 md:col-span-6 group relative flex items-center">
                                <input 
                                   list="datalist-product-names" 
                                   placeholder="精准商品名称缩写 (双击可展开历史库)" 
@@ -391,10 +520,15 @@ export default function OrdersPage() {
                                   className="w-full border border-gray-300 dark:border-zinc-600 rounded bg-white dark:bg-zinc-950 px-2.5 py-1.5 text-sm font-medium outline-none focus:ring-1 focus:ring-blue-500 shadow-sm" 
                                />
                             </div>
-                            <div className="col-span-12 md:col-span-4 flex items-center gap-2">
-                               <span className="text-xs font-bold text-gray-400 shrink-0">需采数量</span>
+                            <div className="col-span-6 md:col-span-3 flex items-center gap-2">
+                               <span className="text-xs font-bold text-gray-400 shrink-0">数量</span>
                                <input type="number" min="1" value={item.quantity} onChange={e => updateCart(idx, 'quantity', parseInt(e.target.value)||1)} className="w-full border border-gray-300 dark:border-zinc-600 rounded bg-white dark:bg-zinc-950 px-2.5 py-1.5 text-sm outline-none focus:ring-1 focus:ring-blue-500 font-bold text-blue-600 shadow-sm text-center" />
                             </div>
+                            <div className="col-span-6 md:col-span-3 flex items-center gap-2">
+                               <span className="text-xs font-bold text-gray-400 shrink-0">结算单价</span>
+                               <input type="number" step="0.01" value={item.unit_price_cny} onChange={e => updateCart(idx, 'unit_price_cny', e.target.value)} className="w-full border border-gray-300 dark:border-zinc-600 rounded bg-white dark:bg-zinc-950 px-2.5 py-1.5 text-sm outline-none focus:ring-1 focus:ring-blue-500 font-bold text-emerald-600 shadow-sm text-center" placeholder="选填" />
+                            </div>
+
                             
                             {/* 货号同样支持智能带出（利用 list 进行双反联想查找） */}
                             <div className="col-span-4 md:col-span-4 flex items-center bg-white dark:bg-zinc-950 border border-gray-200 dark:border-zinc-700 rounded overflow-hidden shadow-sm">
@@ -431,10 +565,11 @@ export default function OrdersPage() {
                 </div>
              </div>
              
-             <button onClick={handleCreateOrder} disabled={isSubmitting} className="w-full md:w-auto bg-blue-600 text-white px-8 py-3 rounded-xl font-black text-base tracking-widest hover:bg-blue-700 hover:shadow-lg transition disabled:opacity-50 flex items-center justify-center gap-2 shrink-0 border border-transparent">
+             <button onClick={handleSaveOrder} disabled={isSubmitting} className="w-full md:w-auto bg-blue-600 text-white px-8 py-3 rounded-xl font-black text-base tracking-widest hover:bg-blue-700 hover:shadow-lg transition disabled:opacity-50 flex items-center justify-center gap-2 shrink-0 border border-transparent">
                 {isSubmitting ? <Loader2 className="w-5 h-5 animate-spin" /> : <CheckCircle2 className="w-5 h-5" />}
-                正式生成合规包裹清单
+                {editingOrderId ? "确认修改订单数据" : "正式生成合规包裹清单"}
              </button>
+
           </div>
         </div>
       )}
@@ -496,11 +631,22 @@ export default function OrdersPage() {
                 </div>
                 
                 <div className="flex flex-row-reverse md:flex-row items-center justify-between w-full md:w-auto gap-3">
+                   <button 
+                      onClick={() => handleEditOrder(order)}
+                      className="px-3 py-1.5 bg-gray-100 dark:bg-zinc-800 hover:bg-blue-50 dark:hover:bg-blue-900/30 text-gray-600 dark:text-gray-400 hover:text-blue-600 rounded-lg text-xs font-bold transition flex items-center gap-1.5"
+                   >
+                      修改
+                   </button>
+                   <button 
+                      onClick={() => handleDeleteOrder(order.id)}
+                      className="px-3 py-1.5 bg-gray-100 dark:bg-zinc-800 hover:bg-red-50 dark:hover:bg-red-900/30 text-gray-400 hover:text-red-500 rounded-lg text-xs font-bold transition flex items-center gap-1.5"
+                   >
+                      删除
+                   </button>
                    {/* 利润计算 */}
                    {(() => {
-                      const costCad = order.order_items?.reduce((s: number, i: any) => s + (i.unit_price_cad || 0) * i.quantity, 0) || 0;
-                      const profitCad = (order.total_cny / order.exchange_rate) - costCad;
-                      const profitCny = profitCad * order.exchange_rate;
+                      const costCny = order.order_items?.reduce((s: number, i: any) => s + (i.unit_price_cad || 0) * i.quantity, 0) || 0;
+                      const profitCny = (order.total_cny || 0) - costCny;
                       return (
                         <div className="hidden sm:flex flex-col items-end mr-4">
                            <span className="text-[9px] font-black text-gray-400 uppercase tracking-widest">预估利润</span>
@@ -513,7 +659,7 @@ export default function OrdersPage() {
                    {getStatusBadge(order.status)}
                    <span className="font-bold text-gray-900 dark:text-white flex items-center gap-1.5 bg-gray-50 dark:bg-zinc-900 px-3 py-1.5 rounded-lg border border-gray-100 dark:border-zinc-800 select-all">
                      <span className="text-[10px] text-gray-500 font-medium tracking-wide">单据一口价收</span>
-                     <span className="text-base text-blue-600 tracking-tight">¥{parseFloat(order.total_cny).toFixed(2)}</span>
+                     <span className="text-base text-blue-600 tracking-tight">¥{order.total_cny ? parseFloat(order.total_cny).toFixed(2) : '未填'}</span>
                    </span>
                 </div>
               </div>
