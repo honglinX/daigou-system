@@ -7,11 +7,13 @@ import { recognizeProductTagFromImage } from "@/utils/ocr";
 export default function Dashboard() {
   const [isLoading, setIsLoading] = useState(true);
   const [stats, setStats] = useState([
-    { name: "未付余款预估 (CNY)", value: "¥0.00", change: "待回款", trend: "up", icon: DollarSign },
-    { name: "待采购商品总件数", value: "0", change: "急需扫货", trend: "down", icon: ShoppingCart },
-    { name: "在途物流包裹数量", value: "0", change: "安全运送中", trend: "up", icon: Package },
-    { name: "全盘利润严算 (CNY)", value: "¥0.00", change: "系统自动计算", trend: "up", icon: DollarSign },
+    { id: "unpaid", name: "未付余款预估 (CNY)", value: "¥0.00", change: "待回款", trend: "up", icon: DollarSign },
+    { id: "pending", name: "待采购商品总件数", value: "0", change: "急需扫货", trend: "down", icon: ShoppingCart },
+    { id: "shipping", name: "在途物流包裹数量", value: "0", change: "安全运送中", trend: "up", icon: Package },
+    { id: "profit", name: "全盘利润严算 (CNY)", value: "¥0.00", change: "系统自动计算", trend: "up", icon: DollarSign },
   ]);
+  const [detailModalType, setDetailModalType] = useState<string | null>(null);
+  const [allOrdersGlobal, setAllOrdersGlobal] = useState<any[]>([]);
   
   const [groupedPurchaseList, setGroupedPurchaseList] = useState<any[]>([]);
   const [recentStoredList, setRecentStoredList] = useState<any[]>([]);
@@ -95,11 +97,13 @@ export default function Dashboard() {
       });
       
       setStats([
-        { name: "未付余款预估 (CNY)", value: `¥${unpaidCny.toFixed(2)}`, change: "未收回票款", trend: unpaidCny > 0 ? "up" : "down", icon: DollarSign },
-        { name: "待采购总件数", value: `${totalPendingItemsCount} 件`, change: totalPendingItemsCount > 0 ? "急需扫货跑腿" : "无积压任务", trend: totalPendingItemsCount > 0 ? "down" : "up", icon: ShoppingCart },
-        { name: "在途物流包裹", value: `${shippingCount} 票`, change: "跨国物流运送中", trend: "up", icon: Package },
-        { name: "全盘纯利核算 (CNY)", value: `¥${calculatedProfitCny.toFixed(2)}`, change: "紧密挂钩当日汇率", trend: calculatedProfitCny > 0 ? "up" : "down", icon: DollarSign },
+        { id: "unpaid", name: "未付余款预估 (CNY)", value: `¥${unpaidCny.toFixed(2)}`, change: "未收回票款", trend: unpaidCny > 0 ? "up" : "down", icon: DollarSign },
+        { id: "pending", name: "待采购总件数", value: `${totalPendingItemsCount} 件`, change: totalPendingItemsCount > 0 ? "急需扫货跑腿" : "无积压任务", trend: totalPendingItemsCount > 0 ? "down" : "up", icon: ShoppingCart },
+        { id: "shipping", name: "在途物流包裹", value: `${shippingCount} 票`, change: "跨国物流运送中", trend: "up", icon: Package },
+        { id: "profit", name: "全盘纯利核算 (CNY)", value: `¥${calculatedProfitCny.toFixed(2)}`, change: "紧密挂钩当日汇率", trend: calculatedProfitCny > 0 ? "up" : "down", icon: DollarSign },
       ]);
+
+      setAllOrdersGlobal(allOrders);
 
       setGroupedPurchaseList(Object.values(groups));
       setRecentStoredList(stored.slice(0, 5));
@@ -174,7 +178,7 @@ export default function Dashboard() {
         {stats.map((stat) => {
           const Icon = stat.icon;
           return (
-            <div key={stat.name} className="overflow-hidden rounded-2xl bg-white p-6 shadow-[0_2px_10px_-3px_rgba(6,81,237,0.1)] border border-gray-100 dark:bg-zinc-950 dark:border-zinc-800 transition-all hover:-translate-y-1 hover:shadow-lg">
+            <div key={stat.name} onClick={() => setDetailModalType(stat.id)} className="overflow-hidden rounded-2xl bg-white p-6 shadow-[0_2px_10px_-3px_rgba(6,81,237,0.1)] border border-gray-100 dark:bg-zinc-950 dark:border-zinc-800 transition-all hover:-translate-y-1 hover:shadow-lg cursor-pointer hover:border-blue-400 group">
               <div className="flex items-start justify-between">
                 <div>
                   <p className="text-[11px] font-bold tracking-wider text-gray-400 dark:text-gray-500 uppercase">{stat.name}</p>
@@ -353,6 +357,93 @@ export default function Dashboard() {
               </div>
            </div>
         </div>
+      )}
+
+      {detailModalType && (
+         <div className="fixed inset-0 bg-black/60 backdrop-blur-md z-[110] flex items-center justify-center p-4" onClick={() => setDetailModalType(null)}>
+            <div className="bg-white dark:bg-zinc-950 w-full max-w-2xl rounded-3xl shadow-2xl border border-gray-100 dark:border-zinc-800 overflow-hidden flex flex-col max-h-[85vh] animate-in zoom-in-95 duration-200" onClick={e => e.stopPropagation()}>
+               <div className="p-5 border-b border-gray-100 dark:border-zinc-800 flex justify-between items-center bg-gray-50/50 dark:bg-zinc-900/80 sticky top-0 z-10">
+                 <h3 className="text-base font-black flex items-center gap-2">
+                   {detailModalType === 'unpaid' && <><DollarSign className="w-5 h-5 text-rose-500"/> 未付余款催收清单</>}
+                   {detailModalType === 'pending' && <><ShoppingCart className="w-5 h-5 text-orange-500"/> 待采购任务台账</>}
+                   {detailModalType === 'shipping' && <><Package className="w-5 h-5 text-blue-500"/> 在途物流包裹明细</>}
+                   {detailModalType === 'profit' && <><DollarSign className="w-5 h-5 text-emerald-500"/> 全盘生意复盘及利润核算</>}
+                 </h3>
+                 <button onClick={() => setDetailModalType(null)} className="text-gray-400 hover:text-red-500 bg-gray-100 dark:bg-zinc-800 hover:bg-red-50 dark:hover:bg-red-900/30 p-2 rounded-full transition">
+                   <X className="w-4 h-4" />
+                 </button>
+               </div>
+               <div className="p-4 overflow-y-auto bg-slate-50 dark:bg-zinc-950 flex-1 space-y-3 custom-scrollbar">
+                  {(() => {
+                     let list = [...allOrdersGlobal];
+                     if (detailModalType === 'unpaid') list = list.filter(o => o.status !== 'delivered');
+                     if (detailModalType === 'shipping') list = list.filter(o => ['shipped_intl', 'shipped_local'].includes(o.status));
+
+                     // 对于 pending 和 profit 我们做特殊映射展示
+                     if (detailModalType === 'pending') {
+                         const pendingItems: any[] = [];
+                         allOrdersGlobal.filter(o => o.status === 'pending').forEach(o => {
+                             o.order_items?.forEach((oi: any) => pendingItems.push({...oi, clientName: (o.clients as any)?.name}));
+                         });
+                         if(pendingItems.length===0) return <div className="p-10 text-center font-bold text-gray-400">目前没有任何积压待采物资。</div>;
+                         return pendingItems.map((item, idx) => (
+                             <div key={idx} className="bg-white dark:bg-zinc-900 p-3 rounded-xl border border-gray-100 dark:border-zinc-800 flex items-center justify-between shadow-sm">
+                                <div className="flex items-center gap-3">
+                                   <div className="w-10 h-10 rounded border border-gray-100 dark:border-zinc-700 bg-gray-50 overflow-hidden shrink-0"><img src={item.products?.image_url} className="w-full h-full object-cover"/></div>
+                                   <div><p className="font-bold text-sm dark:text-gray-200">{item.products?.name}</p><p className="text-[10px] text-gray-500">指向客: {item.clientName}</p></div>
+                                </div>
+                                <span className="font-black text-rose-500 bg-rose-50 dark:bg-rose-500/10 px-2 py-1 rounded text-xs">x{item.quantity} 件</span>
+                             </div>
+                         ));
+                     }
+
+                     if (detailModalType === 'profit') {
+                         return allOrdersGlobal.filter(o => o.status === 'delivered').map((o, idx) => {
+                            const rev = Number(o.total_cny) || 0;
+                            const rate = Number(o.exchange_rate) || 5.35;
+                            let costCad = 0;
+                            o.order_items?.forEach((oi: any) => costCad += (Number(oi.products?.price_cad) || 0) * (Number(oi.quantity) || 1));
+                            const profit = rev - (costCad * rate);
+                            return (
+                             <div key={idx} className="bg-white dark:bg-zinc-900 p-4 rounded-xl border border-gray-100 dark:border-zinc-800 shadow-sm flex flex-col md:flex-row justify-between items-start md:items-center gap-3">
+                                <div>
+                                   <p className="text-[10px] text-gray-400 font-bold mb-1">入网凭证：#{(o.id as string).split('-')[0]}</p>
+                                   <p className="font-bold text-sm text-gray-800 dark:text-gray-200">客：{(o.clients as any)?.name || '散单'}</p>
+                                   <div className="flex gap-2 text-[10px] mt-2 font-mono text-gray-500">
+                                      <span className="bg-gray-100 dark:bg-zinc-800 px-1.5 py-0.5 rounded">收 ¥{rev.toFixed(2)}</span>
+                                      <span className="bg-gray-100 dark:bg-zinc-800 px-1.5 py-0.5 rounded">本 CAD${costCad.toFixed(2)}</span>
+                                   </div>
+                                </div>
+                                <div className="text-right border-l-2 border-emerald-500 pl-3">
+                                   <p className="text-[10px] text-emerald-600/70 font-bold uppercase tracking-widest mb-0.5">净结案利润</p>
+                                   <p className="font-black text-emerald-500 text-lg">¥{profit.toFixed(2)}</p>
+                                </div>
+                             </div>
+                            )
+                         });
+                     }
+
+                     // 默认渲染 (unpaid, shipping)
+                     if (list.length === 0) return <div className="p-10 text-center font-bold text-gray-400">目前列表空空如也。</div>;
+                     return list.map((o, idx) => (
+                        <div key={idx} className="bg-white dark:bg-zinc-900 p-3 rounded-xl border border-gray-100 dark:border-zinc-800 shadow-sm flex flex-col md:flex-row justify-between items-center gap-4">
+                           <div className="flex-1 overflow-hidden w-full">
+                              <p className="font-black text-sm text-gray-800 dark:text-white truncate">
+                                {(o.clients as any)?.name || '未署名'} <span className="text-[10px] font-medium text-gray-400 border border-gray-200 dark:border-zinc-700 px-1.5 py-0.5 rounded ml-2 shadow-sm">{o.status === 'shipped_intl' ? '越洋中' : o.status === 'shipped_local' ? '国内清关中' : '交涉中'}</span>
+                              </p>
+                              <div className="mt-2 flex gap-1.5 overflow-x-auto custom-scrollbar pb-1">
+                                 {o.order_items?.map((oi:any, i:number) => oi.products?.image_url && <img key={i} src={oi.products.image_url} className="w-8 h-8 rounded shrink-0 object-cover border border-gray-100 dark:border-zinc-800" />)}
+                              </div>
+                           </div>
+                           <div className="shrink-0 flex items-center justify-center bg-rose-50 dark:bg-rose-900/20 text-rose-600 px-3 py-1.5 rounded-lg border border-rose-100 dark:border-rose-900/30 font-black whitespace-nowrap">
+                              款 ¥{o.total_cny || '0.00'}
+                           </div>
+                        </div>
+                     ));
+                  })()}
+               </div>
+            </div>
+         </div>
       )}
     </div>
   );

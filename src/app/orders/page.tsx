@@ -2,7 +2,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { Package, Calendar, Loader2, DollarSign, Image as ImageIcon, MapPin, CheckCircle2, ShoppingCart, X, Hash, Palette, Scaling, Copy, Trash2 } from "lucide-react";
 import { supabase } from "@/utils/supabase";
-import { recognizeAddressFromImage } from "@/utils/ocr";
 
 export default function OrdersPage() {
   const [orders, setOrders] = useState<any[]>([]);
@@ -19,11 +18,11 @@ export default function OrdersPage() {
   const [newClientData, setNewClientData] = useState({ name: "", wechat: "" });
   const [newTotalCny, setNewTotalCny] = useState("");
   const [shippingInfo, setShippingInfo] = useState("");
-  const [isRecognizing, setIsRecognizing] = useState(false);
+  const [paymentScreenshot, setPaymentScreenshot] = useState("");
 
   // 多商品购物车
   const [cart, setCart] = useState([
-    { name: "", article_number: "", color: "", size: "", quantity: 1, unit_price_cny: "" }
+    { name: "", article_number: "", color: "", size: "", quantity: 1, unit_price_cad: "" }
   ]);
 
 
@@ -45,6 +44,7 @@ export default function OrdersPage() {
           exchange_rate, 
           created_at, 
           shipping_info_snapshot,
+          payment_screenshot,
           clients(id, name, wechat_id),
           order_items( quantity, unit_price_cad, products(id, name, article_number, color, size, image_url, price_cad) )
         `)
@@ -62,28 +62,32 @@ export default function OrdersPage() {
     setIsLoading(false);
   };
 
-  const handlePaste = useCallback(async (e: React.ClipboardEvent) => {
+  const handleScreenshotPaste = useCallback((e: React.ClipboardEvent) => {
     const items = e.clipboardData?.items;
     if (!items) return;
-
     for (let i = 0; i < items.length; i++) {
         const item = items[i];
         if (item.type.indexOf("image") !== -1) {
             const blob = item.getAsFile();
             if (blob) {
-                // Focus out logic to prevent it grabbing random inputs if we handle global, 
-                // but this is attached to textarea so e.preventDefault is fine.
                 e.preventDefault();
-                setIsRecognizing(true);
-                try {
-                const text = await recognizeAddressFromImage(blob);
-                setShippingInfo(text);
-                } catch (err) {
-                console.error("OCR 失败", err);
-                alert("文字提取失败，请重试跨洋解析。");
-                } finally {
-                setIsRecognizing(false);
-                }
+                const reader = new FileReader();
+                reader.onload = (event) => {
+                    const img = new Image();
+                    img.onload = () => {
+                        const canvas = document.createElement('canvas');
+                        const MAX_SIZE = 800;
+                        let width = img.width, height = img.height;
+                        if (width > height) { if (width > MAX_SIZE) { height = Math.round(height * (MAX_SIZE / width)); width = MAX_SIZE; } } 
+                        else { if (height > MAX_SIZE) { width = Math.round(width * (MAX_SIZE / height)); height = MAX_SIZE; } }
+                        canvas.width = width; canvas.height = height;
+                        const ctx = canvas.getContext('2d');
+                        ctx?.drawImage(img, 0, 0, width, height);
+                        setPaymentScreenshot(canvas.toDataURL('image/webp', 0.8));
+                    };
+                    img.src = event.target?.result as string;
+                };
+                reader.readAsDataURL(blob);
             }
         }
     }
@@ -114,7 +118,7 @@ export default function OrdersPage() {
     setCart(newCart);
   };
 
-  const addCartItem = () => setCart([...cart, { name: "", article_number: "", color: "", size: "", quantity: 1, unit_price_cny: "" }]);
+  const addCartItem = () => setCart([...cart, { name: "", article_number: "", color: "", size: "", quantity: 1, unit_price_cad: "" }]);
   const removeCartItem = (index: number) => setCart(cart.filter((_, i) => i !== index));
 
   const handleEditOrder = (order: any) => {
@@ -122,6 +126,7 @@ export default function OrdersPage() {
     setSelectedClientId(order.clients?.id || "");
     setNewTotalCny(order.total_cny?.toString() || "");
     setShippingInfo(order.shipping_info_snapshot || "");
+    setPaymentScreenshot(order.payment_screenshot || "");
     
     // Map order items to cart
     const newCart = order.order_items.map((oi: any) => ({
@@ -130,7 +135,7 @@ export default function OrdersPage() {
       color: oi.products?.color || "",
       size: oi.products?.size || "",
       quantity: oi.quantity,
-      unit_price_cny: oi.unit_price_cad?.toString() || ""
+      unit_price_cad: oi.unit_price_cad?.toString() || ""
     }));
     setCart(newCart);
     setIsFormOpen(true);
@@ -243,6 +248,7 @@ export default function OrdersPage() {
         exchange_rate: currentRate, 
         total_cny: newTotalCny ? parseFloat(newTotalCny) : null,
         shipping_info_snapshot: shippingInfo,
+        payment_screenshot: paymentScreenshot,
         status: finalStatus
       };
 
@@ -288,7 +294,7 @@ export default function OrdersPage() {
               order_id: orderId,
               product_id: pData.id,
               quantity: item.quantity,
-              unit_price_cad: item.unit_price_cny ? parseFloat(item.unit_price_cny) : 0
+              unit_price_cad: item.unit_price_cad ? parseFloat(item.unit_price_cad) : 0
           });
       }
 
@@ -300,9 +306,10 @@ export default function OrdersPage() {
 
       await fetchData();
       setSelectedOrders([]);
-      setCart([{ name: "", article_number: "", color: "", size: "", quantity: 1, unit_price_cny: "" }]);
+      setCart([{ name: "", article_number: "", color: "", size: "", quantity: 1, unit_price_cad: "" }]);
       setNewTotalCny("");
       setShippingInfo("");
+      setPaymentScreenshot("");
       setNewClientData({ name: "", wechat: "" });
       setSelectedClientId("");
       setIsFormOpen(false);
@@ -348,10 +355,9 @@ export default function OrdersPage() {
   };
 
   const handleUpdateTracking = async (orderId: string, tracking: string) => {
+    // 触发 DB 强更新，保留为显式的单独函数，方便挂载在 onBlur 上
     try {
       await supabase.from('orders').update({ tracking_number: tracking }).eq('id', orderId);
-      // Update local state to avoid refetching
-      setOrders(prev => prev.map(o => o.id === orderId ? { ...o, tracking_number: tracking } : o));
     } catch (err) {
       console.error(err);
     }
@@ -415,15 +421,14 @@ export default function OrdersPage() {
         </div>
         <button 
           onClick={() => {
-            if (isFormOpen && editingOrderId) {
-              setEditingOrderId(null);
-              setCart([{ name: "", article_number: "", color: "", size: "", quantity: 1, unit_price_cny: "" }]);
-              setNewTotalCny("");
-              setShippingInfo("");
-              setSelectedClientId("");
-            } else {
-              setIsFormOpen(!isFormOpen);
-            }
+            setEditingOrderId(null);
+            setCart([{ name: "", article_number: "", color: "", size: "", quantity: 1, unit_price_cad: "" }]);
+            setNewTotalCny("");
+            setShippingInfo("");
+            setPaymentScreenshot("");
+            setSelectedClientId("");
+            setNewClientData({ name: "", wechat: "" });
+            setIsFormOpen(!isFormOpen);
           }}
           disabled={isLoading}
           className="bg-blue-600 text-white px-5 py-2.5 rounded-lg font-bold text-sm tracking-wide hover:bg-blue-700 transition shadow-sm border border-transparent disabled:opacity-50"
@@ -474,21 +479,40 @@ export default function OrdersPage() {
                 <div>
                   <label className="block text-sm font-bold text-gray-800 dark:text-gray-200 mb-1.5 flex justify-between">
                      <span>2. 锁定跨境收货地址快照</span>
-                     <span className="text-[10px] text-gray-400 font-normal border border-gray-200 dark:border-zinc-700 px-1.5 py-0.5 rounded shadow-sm bg-white dark:bg-black">支持微信地址长截图截留 Ctrl+V</span>
+                     <span className="text-[10px] text-gray-400 font-normal border border-gray-200 dark:border-zinc-700 px-1.5 py-0.5 rounded shadow-sm bg-white dark:bg-black">仅支持纯文本防漏粘贴</span>
                   </label>
-                  <div className="relative">
+                  <div className="relative mb-5">
                     <textarea 
                       value={shippingInfo}
                       onChange={e => setShippingInfo(e.target.value)}
-                      onPaste={handlePaste}
-                      className="w-full border border-gray-300 dark:border-zinc-700 rounded-xl p-3 bg-gray-50 dark:bg-zinc-900 outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent text-sm min-h-[140px] resize-none transition-all placeholder:text-gray-400"
-                      placeholder="复制并贴入含省市等地址段。若贴入微信文字图片，系统亦可免云端实现脱机抓取..."
+                      className="w-full border border-gray-300 dark:border-zinc-700 rounded-xl p-3 bg-gray-50 dark:bg-zinc-900 outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent text-sm min-h-[100px] resize-none transition-all placeholder:text-gray-400"
+                      placeholder="请从微信拼音直接完整拖拉粘贴入此区..."
                     />
-                    {isRecognizing && (
-                      <div className="absolute inset-0 bg-white/80 dark:bg-black/80 backdrop-blur-sm rounded-xl flex items-center justify-center flex-col z-10 transition-all">
-                        <Loader2 className="w-8 h-8 animate-spin text-blue-500 mb-2" />
-                        <span className="text-xs font-bold text-blue-600 tracking-widest uppercase">全速引擎正在处理图谱...</span>
-                      </div>
+                  </div>
+
+                  <label className="block text-sm font-bold text-gray-800 dark:text-gray-200 mb-1.5 flex justify-between">
+                     <span>2.1 绑定买单转账或出单聊天底卡</span>
+                     <span className="text-[10px] text-emerald-600 bg-emerald-50 dark:bg-emerald-900/30 border border-emerald-200 dark:border-emerald-800/50 px-1.5 py-0.5 rounded flex items-center gap-1 font-bold shadow-sm">
+                       <CheckCircle2 className="w-3 h-3"/> 图库直达
+                     </span>
+                  </label>
+                  <div 
+                    className="w-full border-2 border-dashed border-gray-300 dark:border-zinc-700 rounded-xl bg-white dark:bg-zinc-950 hover:bg-emerald-50/30 dark:hover:bg-emerald-900/10 transition flex items-center justify-center overflow-hidden cursor-pointer group focus:ring-4 focus:ring-emerald-500/20 outline-none relative min-h-[120px]"
+                    onPaste={handleScreenshotPaste}
+                    tabIndex={0}
+                  >
+                    {paymentScreenshot ? (
+                       <div className="relative w-full h-full flex flex-col items-center p-2">
+                          <img src={paymentScreenshot} className="h-40 object-contain rounded-lg border border-gray-200 dark:border-zinc-800 shadow-sm" alt="Payment Screenshot" />
+                          <button onClick={(e) => { e.stopPropagation(); setPaymentScreenshot(""); }} className="absolute top-2 right-2 bg-red-100 hover:bg-red-200 text-red-600 p-1.5 rounded-full transition shadow-sm">
+                            <X className="w-4 h-4"/>
+                          </button>
+                       </div>
+                    ) : (
+                       <div className="flex flex-col items-center py-6 text-gray-400 group-hover:text-emerald-500 transition-colors">
+                          <ImageIcon className="w-8 h-8 mb-2 opacity-50 group-hover:opacity-100 transition-opacity" />
+                          <span className="text-sm font-bold">点此激活后 <kbd className="bg-gray-100 dark:bg-zinc-800 border-b-2 border-gray-300 dark:border-zinc-600 rounded px-1.5 mx-1 text-gray-700 dark:text-gray-300 font-mono">Ctrl+V</kbd> 录入截图底单</span>
+                       </div>
                     )}
                   </div>
                 </div>
@@ -525,8 +549,8 @@ export default function OrdersPage() {
                                <input type="number" min="1" value={item.quantity} onChange={e => updateCart(idx, 'quantity', parseInt(e.target.value)||1)} className="w-full border border-gray-300 dark:border-zinc-600 rounded bg-white dark:bg-zinc-950 px-2.5 py-1.5 text-sm outline-none focus:ring-1 focus:ring-blue-500 font-bold text-blue-600 shadow-sm text-center" />
                             </div>
                             <div className="col-span-6 md:col-span-3 flex items-center gap-2">
-                               <span className="text-xs font-bold text-gray-400 shrink-0">结算单价</span>
-                               <input type="number" step="0.01" value={item.unit_price_cny} onChange={e => updateCart(idx, 'unit_price_cny', e.target.value)} className="w-full border border-gray-300 dark:border-zinc-600 rounded bg-white dark:bg-zinc-950 px-2.5 py-1.5 text-sm outline-none focus:ring-1 focus:ring-blue-500 font-bold text-emerald-600 shadow-sm text-center" placeholder="选填" />
+                               <span className="text-xs font-bold text-gray-400 shrink-0">单价(外币)</span>
+                               <input type="number" step="0.01" value={item.unit_price_cad} onChange={e => updateCart(idx, 'unit_price_cad', e.target.value)} className="w-full border border-gray-300 dark:border-zinc-600 rounded bg-white dark:bg-zinc-950 px-2.5 py-1.5 text-sm outline-none focus:ring-1 focus:ring-blue-500 font-bold text-emerald-600 shadow-sm text-center" placeholder="进货价" />
                             </div>
 
                             
@@ -645,8 +669,8 @@ export default function OrdersPage() {
                    </button>
                    {/* 利润计算 */}
                    {(() => {
-                      const costCny = order.order_items?.reduce((s: number, i: any) => s + (i.unit_price_cad || 0) * i.quantity, 0) || 0;
-                      const profitCny = (order.total_cny || 0) - costCny;
+                      const costCad = order.order_items?.reduce((s: number, i: any) => s + (i.unit_price_cad || 0) * i.quantity, 0) || 0;
+                      const profitCny = (order.total_cny || 0) - (costCad * (order.exchange_rate || 5.35));
                       return (
                         <div className="hidden sm:flex flex-col items-end mr-4">
                            <span className="text-[9px] font-black text-gray-400 uppercase tracking-widest">预估利润</span>
@@ -690,12 +714,22 @@ export default function OrdersPage() {
                  </div>
                  
                  <div className="flex flex-col">
-                    <h4 className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-3 flex items-center gap-2"><MapPin className="w-3.5 h-3.5"/> 物流最终落地指向位</h4>
-                    <div className="bg-yellow-50/50 dark:bg-yellow-900/10 border border-yellow-200/50 dark:border-yellow-900/20 rounded-xl p-4 flex-1 group/address relative hover:border-yellow-400/50 transition duration-300 shadow-inner">
-                       <Copy className="absolute top-4 right-4 w-4 h-4 text-yellow-600/30 group-hover/address:text-yellow-600 cursor-pointer hidden md:block active:scale-95 transition-transform" />
-                       <p className="text-[13px] text-yellow-900 dark:text-yellow-600/80 leading-relaxed font-bold tracking-wide whitespace-pre-wrap select-all pr-6">
-                         {order.shipping_info_snapshot || '（本批次特殊派件，无收货落地指向痕迹保留）'}
-                       </p>
+                    <h4 className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-3 flex items-center gap-2"><MapPin className="w-3.5 h-3.5"/> 物流最终落地指向位与底卡</h4>
+                    <div className="flex gap-3 flex-1">
+                       <div className="bg-yellow-50/50 dark:bg-yellow-900/10 border border-yellow-200/50 dark:border-yellow-900/20 rounded-xl p-4 flex-1 group/address relative hover:border-yellow-400/50 transition duration-300 shadow-inner">
+                          <Copy className="absolute top-4 right-4 w-4 h-4 text-yellow-600/30 group-hover/address:text-yellow-600 cursor-pointer hidden md:block active:scale-95 transition-transform" />
+                          <p className="text-[13px] text-yellow-900 dark:text-yellow-600/80 leading-relaxed font-bold tracking-wide whitespace-pre-wrap select-all pr-6">
+                            {order.shipping_info_snapshot || '（本批次特殊派件，无收货落地指向痕迹保留）'}
+                          </p>
+                       </div>
+                       {order.payment_screenshot && (
+                          <div className="w-24 shrink-0 rounded-xl border border-gray-200 dark:border-zinc-800 overflow-hidden bg-white dark:bg-black p-1 hover:scale-[2.5] hover:-translate-x-full hover:-translate-y-1/2 hover:shadow-2xl transition-all duration-300 z-50 origin-right cursor-zoom-in shadow-sm relative group/img">
+                             <img src={order.payment_screenshot} className="w-full h-full object-cover rounded-lg" alt="凭单" />
+                             <div className="absolute inset-0 bg-black/60 opacity-0 group-hover/img:opacity-100 transition-opacity flex items-center justify-center rounded-lg">
+                                <span className="text-[10px] text-white font-bold">成交底卡</span>
+                             </div>
+                          </div>
+                       )}
                     </div>
                     <div className="mt-4 flex items-center gap-3">
                        <div className="bg-blue-50 dark:bg-blue-900/20 px-3 py-2 rounded-xl border border-blue-100 dark:border-blue-800/30 flex-1 flex items-center gap-2">
@@ -704,7 +738,11 @@ export default function OrdersPage() {
                              type="text" 
                              placeholder="贴入国际/国内运单号..." 
                              value={order.tracking_number || ''} 
-                             onChange={(e) => handleUpdateTracking(order.id, e.target.value)}
+                             onChange={(e) => {
+                                const val = e.target.value;
+                                setOrders(prev => prev.map(o => o.id === order.id ? { ...o, tracking_number: val } : o));
+                             }}
+                             onBlur={(e) => handleUpdateTracking(order.id, e.target.value)}
                              className="bg-transparent border-none outline-none text-xs font-bold text-blue-700 dark:text-blue-400 w-full placeholder:text-blue-300" 
                           />
                        </div>
